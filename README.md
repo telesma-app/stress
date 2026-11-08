@@ -1,20 +1,22 @@
 # go-ctap/stress
 
-`go-ctap/stress` is a read-only stress test for USB CTAP2 authenticators. It sends CTAPHID pings and safe CTAP commands,
+`go-ctap/stress` is a non-destructive stress test for USB CTAP2 authenticators. It sends CTAPHID and safe CTAP commands,
 checks the replies, and reports errors, latency, and request rate.
 
-The tool uses [`go-ctap/ctap`](https://github.com/go-ctap/ctap) and the cgo-free
-[`go-ctap/hid`](https://github.com/go-ctap/hid) backend.
+The tool uses [`telesma-app/ctap`](https://github.com/telesma-app/ctap) and the cgo-free
+[`telesma-app/hid`](https://github.com/telesma-app/hid) backend.
 
 > [!WARNING]
-> The test does not create, change, or delete authenticator data. However, a high load can still hang or restart a device
-> with faulty firmware. Start with one worker and a short run.
+> The test does not create, change, or delete authenticator data. The optional `lock` operation temporarily blocks other
+> CTAPHID channels. A high load can still hang or restart a device with faulty firmware. Start with one worker and a short
+> run.
 
 ## Operations
 
 | Operation | What it tests |
 |---|---|
 | `ping` | CTAPHID framing, fragmented messages, and full echo replies |
+| `lock` | CTAPHID channel locking and contention between independent channels |
 | `get-info` | CBOR decoding and stable capability fields from `authenticatorGetInfo` |
 | `pin-retries` | Read-only `getPINRetries`; requires the reported `clientPin` option |
 | `uv-retries` | Read-only `getUVRetries`; requires the reported `uv` option and CTAP 2.1 or newer |
@@ -52,7 +54,13 @@ go run ./cmd/ctap-stress \
 ```
 
 `-device` accepts the number shown by `-list`, a HID path, or a unique serial number. If only one device is connected,
-the option can be omitted.
+the option can be omitted. Only successfully read serial numbers participate in selection; use the ordinal or path
+when the serial is empty or unavailable. A reported serial is not a verified device identity.
+
+The device list and run preamble preserve descriptor read outcomes. Read IDs are hexadecimal, including `0000`;
+read strings are quoted, including `""` for an observed empty string. `<unavailable>` means the platform did not
+provide a value; `<error message="...">` reports a descriptor read failure. Neither outcome
+establishes that the device has no descriptor.
 
 ## Test selection
 
@@ -81,6 +89,16 @@ Before the run, the tool reads `authenticatorGetInfo` and limits the default pin
 go run ./cmd/ctap-stress -device 1 -ops ping -ping-sizes 0,57,58,1024
 ```
 
+To exercise `CTAPHID_LOCK`, use at least two workers so other channels contend with the lock holder:
+
+```sh
+go run ./cmd/ctap-stress -device 1 -workers 4 -duration 2m \
+  -ops lock,ping -lock-seconds 1
+```
+
+`-lock-seconds` accepts `0..10` and defaults to `1`. A value of `0` sends an unlock request. LOCK has no CTAPHID
+capability flag, so unsupported devices are tested directly and typically report `ERR_INVALID_CMD`.
+
 ## Limits and recovery
 
 `-duration` and `-requests` are both upper limits. The run stops when it reaches the first limit. Set `-duration 0` when
@@ -90,6 +108,10 @@ The `-rate` option sets a global request-per-second limit for all workers. A val
 
 After a command error, a worker closes its channel and opens a new one. This keeps the run active while the first error
 stays in the report. Use `-reopen-on-error=false` to keep the same channel.
+
+The CTAPHID transport retries `ERR_CHANNEL_BUSY` until the per-command timeout. During a multi-worker lock test,
+contention can therefore appear as increased latency or a timeout instead of an immediate channel-busy error. A
+successful lock is not explicitly released by the runner and expires after the configured duration, at most 10 seconds.
 
 Press `Ctrl-C` once to stop the run and print the collected report. Press it again if an operating system or device call
 does not stop.
@@ -125,13 +147,22 @@ The process uses these exit codes:
 - Do not run other programs that change the same authenticator during a test.
 - Start with `-workers 1` and a small `-requests` value before adding load.
 - Use `-ops ping` to focus on the HID and CTAPHID transport.
+- Do not use the authenticator from another program during a lock test; its channel may be blocked for up to 10 seconds.
 - An explicit ping size above `maxMsgSize` may correctly return `ERR_INVALID_LEN`; this is a negative test, not always a
   firmware bug.
 - Percentiles are upper bounds from latency buckets, not exact sampled values.
 
 ## Testing
 
+Run tests and static checks with Go 1.27.3 or newer:
+
 ```sh
 go test ./...
 go vet ./...
+```
+
+Run golangci-lint v2 with the standard linters and `wsl_v5`:
+
+```sh
+golangci-lint run ./...
 ```

@@ -1,7 +1,6 @@
 package stress
 
 import (
-	"cmp"
 	"slices"
 	"sync"
 	"time"
@@ -271,9 +270,7 @@ func (r Report) SortedOperations() []Operation {
 		operations = append(operations, operation)
 	}
 
-	slices.SortFunc(operations, func(a, b Operation) int {
-		return cmp.Compare(string(a), string(b))
-	})
+	slices.Sort(operations)
 
 	return operations
 }
@@ -311,6 +308,7 @@ type Report struct {
 	Workers           int                          `json:"workers"`
 	ConfiguredOps     []Operation                  `json:"configuredOperations"`
 	PingSizes         []int                        `json:"pingSizes,omitempty"`
+	LockSeconds       uint                         `json:"lockSeconds"`
 	CommandTimeout    time.Duration                `json:"commandTimeout"`
 	BaselineInfo      InfoSnapshot                 `json:"baselineInfo"`
 	Attempts          uint64                       `json:"attempts"`

@@ -1,20 +1,45 @@
 package stress
 
 import (
+	"math"
 	"testing"
 
 	"github.com/telesma-app/ctap/protocol"
 )
 
+func TestValidateRate(t *testing.T) {
+	t.Parallel()
+
+	for _, rate := range []float64{0, 1e-9, 1, 1e9} {
+		config := DefaultConfig()
+		config.DevicePath = "/dev/fake"
+
+		config.Rate = rate
+		if err := config.Validate(); err != nil {
+			t.Errorf("Validate with rate %g: %v", rate, err)
+		}
+	}
+
+	for _, rate := range []float64{-1, 1e9 + 1, math.NaN(), math.Inf(1), math.Inf(-1), math.SmallestNonzeroFloat64} {
+		config := DefaultConfig()
+		config.DevicePath = "/dev/fake"
+
+		config.Rate = rate
+		if err := config.Validate(); err == nil {
+			t.Errorf("Validate accepted rate %g", rate)
+		}
+	}
+}
+
 func TestParseOperations(t *testing.T) {
 	t.Parallel()
 
-	operations, err := ParseOperations("ping, get-info,pin-retries")
+	operations, err := ParseOperations("ping, lock,get-info,pin-retries")
 	if err != nil {
 		t.Fatalf("ParseOperations: %v", err)
 	}
 
-	want := []Operation{OperationPing, OperationGetInfo, OperationPINRetries}
+	want := []Operation{OperationPing, OperationLock, OperationGetInfo, OperationPINRetries}
 	if len(operations) != len(want) {
 		t.Fatalf("operations = %v, want %v", operations, want)
 	}
@@ -31,6 +56,28 @@ func TestParseOperations(t *testing.T) {
 
 	if _, err := ParseOperations("reset"); err == nil {
 		t.Fatal("mutating/unknown operation was accepted")
+	}
+}
+
+func TestValidateLockSeconds(t *testing.T) {
+	t.Parallel()
+
+	for _, seconds := range []uint{0, 10} {
+		config := DefaultConfig()
+		config.DevicePath = "/dev/fake"
+
+		config.LockSeconds = seconds
+		if err := config.Validate(); err != nil {
+			t.Fatalf("Validate with lock seconds %d: %v", seconds, err)
+		}
+	}
+
+	config := DefaultConfig()
+	config.DevicePath = "/dev/fake"
+
+	config.LockSeconds = 11
+	if err := config.Validate(); err == nil {
+		t.Fatal("lock duration above 10 seconds was accepted")
 	}
 }
 

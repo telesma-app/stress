@@ -51,17 +51,18 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	flags.DurationVar(&config.CommandTimeout, "timeout", config.CommandTimeout, "per-command timeout")
 	flags.DurationVar(&config.OpenTimeout, "open-timeout", config.OpenTimeout, "per-channel open timeout")
 	flags.Float64Var(&config.Rate, "rate", config.Rate, "global requests/second limit; 0 means unlimited")
+	flags.UintVar(&config.LockSeconds, "lock-seconds", config.LockSeconds, "CTAPHID lock duration (0 unlocks; maximum 10)")
 	flags.DurationVar(&config.ReopenDelay, "reopen-delay", config.ReopenDelay, "delay before reopening a failed channel")
 	flags.BoolVar(&config.ReopenOnError, "reopen-on-error", config.ReopenOnError, "reopen a worker channel after a command failure")
 	flags.BoolVar(&config.CheckInfoStable, "check-info-stability", config.CheckInfoStable, "fail if stable GetInfo capability fields drift")
 	flags.DurationVar(&config.ProgressEvery, "progress", config.ProgressEvery, "progress interval; 0 disables progress")
 	flags.IntVar(&config.FailureSamples, "failure-samples", config.FailureSamples, "maximum detailed failures retained")
 	flags.BoolVar(&jsonOutput, "json", false, "write the final report as JSON")
-	flags.StringVar(&operations, "ops", joinOperations(config.Operations), "comma-separated: ping,get-info,pin-retries,uv-retries")
+	flags.StringVar(&operations, "ops", joinOperations(config.Operations), "comma-separated: ping,lock,get-info,pin-retries,uv-retries")
 	flags.StringVar(&pingSizes, "ping-sizes", joinInts(config.PingSizes), "comma-separated CTAPHID ping payload sizes (0..7609); explicit values override the GetInfo limit")
 
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "Read-only CTAP/CTAPHID stress runner")
+		_, _ = fmt.Fprintln(stderr, "Non-destructive CTAP/CTAPHID stress runner")
 		_, _ = fmt.Fprintf(stderr, "\nUsage: %s [flags]\n\n", flags.Name())
 		flags.PrintDefaults()
 	}
@@ -147,15 +148,8 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "preflight open failed: %v\n", err)
 		return 2
 	}
-
-	info, ok := preflight.GetInfoCached()
-	if !ok {
-		closeErr := preflight.Close()
-		_, _ = fmt.Fprintf(stderr, "preflight GetInfo cache is unexpectedly invalid (close: %v)\n", closeErr)
-
-		return 2
-	}
-
+	// A successful open has populated GetInfo, and no command has invalidated it.
+	info, _ := preflight.GetInfoCached()
 	if err := preflight.Close(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "preflight close failed: %v\n", err)
 		return 2
@@ -193,8 +187,10 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	printPreamble(stderr, selected, info, config)
 	runner := stress.Runner{
 		Config:       config,
-		Open:         open,
 		BaselineInfo: baseline,
+		Open: func(ctx context.Context, path string) (stress.Device, error) {
+			return open(ctx, path)
+		},
 		Progress: func(snapshot stress.Snapshot) {
 			_, _ = fmt.Fprintf(
 				stderr,
@@ -233,13 +229,13 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func authenticatorOpener(namedPipe bool) func(context.Context, string) (stress.Device, error) {
+func authenticatorOpener(namedPipe bool) func(context.Context, string) (*authenticator.Device, error) {
 	open := hidbackend.Open
 	if namedPipe {
 		open = hidproxy.Open
 	}
 
-	return func(ctx context.Context, path string) (stress.Device, error) {
+	return func(ctx context.Context, path string) (*authenticator.Device, error) {
 		transport, err := open(ctx, path)
 		if err != nil {
 			return nil, err
@@ -286,28 +282,28 @@ func selectDevice(devices []*ghid.DeviceInfo, selector string) (*ghid.DeviceInfo
 		return nil, fmt.Errorf("multiple devices found; select one with -device")
 	}
 
+	var match *ghid.DeviceInfo
+
+	for _, device := range devices {
+		if device.Path == selector || (device.SerialNbr.Value != nil && *device.SerialNbr.Value == selector) {
+			if match != nil {
+				return nil, fmt.Errorf("device selector %q is ambiguous", selector)
+			}
+
+			match = device
+		}
+	}
+
+	if match != nil {
+		return match, nil
+	}
+
 	if ordinal, err := strconv.Atoi(selector); err == nil {
 		if ordinal >= 1 && ordinal <= len(devices) {
 			return devices[ordinal-1], nil
 		}
 
 		return nil, fmt.Errorf("device ordinal %d is outside 1..%d", ordinal, len(devices))
-	}
-
-	var matches []*ghid.DeviceInfo
-
-	for _, device := range devices {
-		if device.Path == selector || (device.SerialNbr.Value != nil && *device.SerialNbr.Value == selector) {
-			matches = append(matches, device)
-		}
-	}
-
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-
-	if len(matches) > 1 {
-		return nil, fmt.Errorf("device selector %q is ambiguous", selector)
 	}
 
 	return nil, fmt.Errorf("device %q was not found", selector)
@@ -346,8 +342,13 @@ func printPreamble(w io.Writer, device *ghid.DeviceInfo, info protocol.Authentic
 		device.Path,
 	)
 	_, _ = fmt.Fprintf(w, "CTAP versions: %v, AAGUID: %s, maxMsgSize: %d\n", info.Versions, info.AAGUID, info.EffectiveMaxMsgSize())
+
 	_, _ = fmt.Fprintf(w, "load: workers=%d ops=%s timeout=%s duration=%s requests=%d\n", config.Workers, joinOperations(config.Operations), config.CommandTimeout, config.Duration, config.Requests)
-	_, _ = fmt.Fprintln(w, "suite is read-only; Ctrl-C stops it and still prints the collected report")
+	if slices.Contains(config.Operations, stress.OperationLock) {
+		_, _ = fmt.Fprintf(w, "CTAPHID lock duration: %d seconds\n", config.LockSeconds)
+	}
+
+	_, _ = fmt.Fprintln(w, "suite does not modify authenticator data; Ctrl-C stops it and still prints the collected report")
 }
 
 func printReport(w io.Writer, report stress.Report) {

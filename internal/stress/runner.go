@@ -15,12 +15,12 @@ import (
 	"github.com/telesma-app/ctap/transport/ctaphid"
 )
 
-// Device is the non-mutating subset used by the stress runner.
+// Device is the non-destructive subset used by the stress runner.
 type Device interface {
 	io.Closer
 	Ping(context.Context, []byte) error
+	Lock(context.Context, uint) error
 	GetInfo(context.Context) (protocol.AuthenticatorGetInfoResponse, error)
-	GetInfoCached() (protocol.AuthenticatorGetInfoResponse, bool)
 	GetPINRetries(context.Context) (uint, *bool, error)
 	GetUVRetries(context.Context) (uint, error)
 }
@@ -31,7 +31,7 @@ type OpenFunc func(context.Context, string) (Device, error)
 // ProgressFunc receives periodic aggregate snapshots. It must return quickly.
 type ProgressFunc func(Snapshot)
 
-// Runner executes a bounded read-only stress run.
+// Runner executes a bounded non-destructive stress run.
 type Runner struct {
 	Config       Config
 	Open         OpenFunc
@@ -44,15 +44,9 @@ type Runner struct {
 
 // Run opens one independent CTAPHID channel per worker and executes commands
 // until the duration or global request limit is reached.
+// Config must be validated before Run, and Open must be set.
+// The Runner and its configuration must not be modified until Run returns.
 func (r *Runner) Run(parent context.Context) (Report, error) {
-	if r.Open == nil {
-		return Report{}, fmt.Errorf("open function is nil")
-	}
-
-	if err := r.Config.Validate(); err != nil {
-		return Report{}, err
-	}
-
 	r.nextRequest.Store(0)
 	r.nextPing.Store(0)
 
@@ -67,44 +61,42 @@ func (r *Runner) Run(parent context.Context) (Report, error) {
 	startedAt := time.Now()
 	metrics := newMetricSet(startedAt, r.Config.FailureSamples)
 
-	limiter, err := newRateLimiter(r.Config.Rate)
-	if err != nil {
-		return Report{}, err
-	}
-	defer limiter.Close()
+	var ticks <-chan time.Time
 
-	progressDone := make(chan struct{})
-	go r.reportProgress(runCtx, metrics, progressDone)
+	if r.Config.Rate > 0 {
+		ticker := time.NewTicker(time.Duration(float64(time.Second) / r.Config.Rate))
+		defer ticker.Stop()
+
+		ticks = ticker.C
+	}
+
+	var progress sync.WaitGroup
+	if r.Progress != nil && r.Config.ProgressEvery > 0 {
+		progress.Go(func() { r.reportProgress(runCtx, metrics) })
+	}
 
 	var workers sync.WaitGroup
-	workers.Add(r.Config.Workers)
-
 	for workerID := range r.Config.Workers {
-		go func() {
-			defer workers.Done()
-
-			r.runWorker(runCtx, workerID+1, baselineSignature, limiter, metrics)
-		}()
+		workers.Go(func() {
+			r.runWorker(runCtx, workerID+1, baselineSignature, ticks, metrics)
+		})
 	}
 
 	workers.Wait()
 	cancel()
-	<-progressDone
+	progress.Wait()
 
 	report := metrics.report(time.Now())
 	report.DevicePath = r.Config.DevicePath
 	report.Workers = r.Config.Workers
 	report.ConfiguredOps = append([]Operation(nil), r.Config.Operations...)
 	report.PingSizes = append([]int(nil), r.Config.PingSizes...)
+	report.LockSeconds = r.Config.LockSeconds
 	report.CommandTimeout = r.Config.CommandTimeout
 	report.BaselineInfo = r.BaselineInfo
 	report.InfoSignature = baselineSignature
 
-	if parent.Err() != nil {
-		return report, parent.Err()
-	}
-
-	return report, nil
+	return report, parent.Err()
 }
 
 func (r *Runner) runContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -119,7 +111,7 @@ func (r *Runner) runWorker(
 	ctx context.Context,
 	workerID int,
 	baselineSignature string,
-	limiter *rateLimiter,
+	ticks <-chan time.Time,
 	metrics *metricSet,
 ) {
 	var device Device
@@ -131,21 +123,32 @@ func (r *Runner) runWorker(
 		}
 	}()
 
-	for {
+	for ctx.Err() == nil {
 		requestNumber, ok := r.claimRequest()
 		if !ok {
 			return
 		}
 
-		if err := limiter.Wait(ctx); err != nil {
-			return
+		if ticks != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticks:
+			}
 		}
 
 		operation := r.Config.Operations[(requestNumber-1)%uint64(len(r.Config.Operations))]
 
 		if device == nil {
 			startedAt := time.Now()
-			opened, err := r.openDevice(ctx)
+			openCtx, cancel := context.WithTimeout(ctx, r.Config.OpenTimeout)
+
+			var err error
+
+			device, err = r.Open(openCtx, r.Config.DevicePath)
+
+			cancel()
+
 			openDuration := time.Since(startedAt)
 
 			if ctx.Err() != nil {
@@ -169,8 +172,6 @@ func (r *Runner) runWorker(
 
 				continue
 			}
-
-			device = opened
 		}
 
 		result := r.execute(ctx, device, workerID, operation, baselineSignature)
@@ -205,13 +206,6 @@ func (r *Runner) claimRequest() (uint64, bool) {
 	return number, true
 }
 
-func (r *Runner) openDevice(ctx context.Context) (Device, error) {
-	openCtx, cancel := context.WithTimeout(ctx, r.Config.OpenTimeout)
-	defer cancel()
-
-	return r.Open(openCtx, r.Config.DevicePath)
-}
-
 func (r *Runner) execute(
 	ctx context.Context,
 	device Device,
@@ -233,6 +227,8 @@ func (r *Runner) execute(
 		result.PingBytes = size
 		result.PingSet = true
 		result.Err = device.Ping(commandCtx, payload)
+	case OperationLock:
+		result.Err = device.Lock(commandCtx, r.Config.LockSeconds)
 	case OperationGetInfo:
 		var info protocol.AuthenticatorGetInfoResponse
 
@@ -250,7 +246,7 @@ func (r *Runner) execute(
 	case OperationUVRetries:
 		_, result.Err = device.GetUVRetries(commandCtx)
 	default:
-		result.Err = fmt.Errorf("unknown operation %q", operation)
+		panic(fmt.Sprintf("unknown operation %q", operation))
 	}
 
 	result.Duration = time.Since(startedAt)
@@ -261,14 +257,7 @@ func (r *Runner) execute(
 	return result
 }
 
-func (r *Runner) reportProgress(ctx context.Context, metrics *metricSet, done chan<- struct{}) {
-	defer close(done)
-
-	if r.Progress == nil || r.Config.ProgressEvery == 0 {
-		<-ctx.Done()
-		return
-	}
-
+func (r *Runner) reportProgress(ctx context.Context, metrics *metricSet) {
 	ticker := time.NewTicker(r.Config.ProgressEvery)
 	defer ticker.Stop()
 
@@ -306,10 +295,6 @@ func (e *infoDriftError) Error() string {
 }
 
 func classifyError(err error) string {
-	if err == nil {
-		return ""
-	}
-
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
@@ -363,41 +348,5 @@ func waitReopen(ctx context.Context, delay time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
-	}
-}
-
-type rateLimiter struct {
-	ticker *time.Ticker
-}
-
-func newRateLimiter(rate float64) (*rateLimiter, error) {
-	if rate == 0 {
-		return &rateLimiter{}, nil
-	}
-
-	interval := time.Duration(float64(time.Second) / rate)
-	if interval < time.Nanosecond {
-		return nil, fmt.Errorf("rate %.3f is too high", rate)
-	}
-
-	return &rateLimiter{ticker: time.NewTicker(interval)}, nil
-}
-
-func (l *rateLimiter) Wait(ctx context.Context) error {
-	if l.ticker == nil {
-		return ctx.Err()
-	}
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-l.ticker.C:
-		return nil
-	}
-}
-
-func (l *rateLimiter) Close() {
-	if l.ticker != nil {
-		l.ticker.Stop()
 	}
 }

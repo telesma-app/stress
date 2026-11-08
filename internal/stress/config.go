@@ -2,6 +2,8 @@ package stress
 
 import (
 	"fmt"
+	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -9,11 +11,12 @@ import (
 	"github.com/telesma-app/ctap/protocol"
 )
 
-// Operation identifies one non-mutating authenticator command.
+// Operation identifies one non-destructive authenticator command.
 type Operation string
 
 const (
 	OperationPing       Operation = "ping"
+	OperationLock       Operation = "lock"
 	OperationGetInfo    Operation = "get-info"
 	OperationPINRetries Operation = "pin-retries"
 	OperationUVRetries  Operation = "uv-retries"
@@ -21,6 +24,7 @@ const (
 
 var knownOperations = map[Operation]struct{}{
 	OperationPing:       {},
+	OperationLock:       {},
 	OperationGetInfo:    {},
 	OperationPINRetries: {},
 	OperationUVRetries:  {},
@@ -37,6 +41,7 @@ type Config struct {
 	Rate            float64
 	Operations      []Operation
 	PingSizes       []int
+	LockSeconds     uint
 	CheckInfoStable bool
 	ReopenOnError   bool
 	ReopenDelay     time.Duration
@@ -54,6 +59,7 @@ func DefaultConfig() Config {
 		OpenTimeout:     5 * time.Second,
 		Operations:      []Operation{OperationPing, OperationGetInfo},
 		PingSizes:       []int{0, 1, 57, 58, 64, 116, 117, 1024, 7609},
+		LockSeconds:     1,
 		CheckInfoStable: true,
 		ReopenOnError:   true,
 		ReopenDelay:     100 * time.Millisecond,
@@ -88,8 +94,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("open timeout must be positive")
 	}
 
-	if c.Rate < 0 || c.Rate > 1e9 {
+	if math.IsNaN(c.Rate) || c.Rate < 0 || c.Rate > 1e9 {
 		return fmt.Errorf("rate must be between 0 and 1e9 requests/second")
+	}
+
+	if c.Rate > 0 && float64(time.Second)/c.Rate >= 1<<63 {
+		return fmt.Errorf("rate is too low for a timer interval")
 	}
 
 	if len(c.Operations) == 0 {
@@ -102,7 +112,7 @@ func (c Config) Validate() error {
 		}
 	}
 
-	if containsOperation(c.Operations, OperationPing) && len(c.PingSizes) == 0 {
+	if slices.Contains(c.Operations, OperationPing) && len(c.PingSizes) == 0 {
 		return fmt.Errorf("at least one ping size is required")
 	}
 
@@ -110,6 +120,10 @@ func (c Config) Validate() error {
 		if size < 0 || size > 7609 {
 			return fmt.Errorf("ping size %d is outside CTAPHID range 0..7609", size)
 		}
+	}
+
+	if c.LockSeconds > 10 {
+		return fmt.Errorf("lock seconds must be between 0 and 10")
 	}
 
 	if c.ReopenDelay < 0 {
@@ -130,7 +144,7 @@ func (c Config) Validate() error {
 // ValidateCapabilities rejects explicitly requested commands which the
 // authenticator says it cannot service.
 func (c Config) ValidateCapabilities(info protocol.AuthenticatorGetInfoResponse) error {
-	if containsOperation(c.Operations, OperationPINRetries) {
+	if slices.Contains(c.Operations, OperationPINRetries) {
 		if _, ok := info.Options[protocol.OptionClientPIN]; !ok {
 			return fmt.Errorf("operation %q requires the clientPin option", OperationPINRetries)
 		}
@@ -140,7 +154,7 @@ func (c Config) ValidateCapabilities(info protocol.AuthenticatorGetInfoResponse)
 		}
 	}
 
-	if containsOperation(c.Operations, OperationUVRetries) {
+	if slices.Contains(c.Operations, OperationUVRetries) {
 		if _, ok := info.Options[protocol.OptionUserVerification]; !ok {
 			return fmt.Errorf("operation %q requires the uv option", OperationUVRetries)
 		}
@@ -174,34 +188,22 @@ func supportsCTAP21(versions protocol.Versions) bool {
 	return false
 }
 
-func containsOperation(operations []Operation, want Operation) bool {
-	for _, operation := range operations {
-		if operation == want {
-			return true
-		}
-	}
-
-	return false
-}
-
 // ParseOperations parses a comma-separated operation list and rejects
 // duplicates because duplicate weighting is easy to request accidentally.
 func ParseOperations(value string) ([]Operation, error) {
 	parts := strings.Split(value, ",")
-	operations := make([]Operation, 0, len(parts))
 
-	seen := make(map[Operation]struct{}, len(parts))
+	operations := make([]Operation, 0, len(parts))
 	for _, part := range parts {
 		operation := Operation(strings.TrimSpace(part))
 		if _, ok := knownOperations[operation]; !ok {
 			return nil, fmt.Errorf("unknown operation %q", operation)
 		}
 
-		if _, ok := seen[operation]; ok {
+		if slices.Contains(operations, operation) {
 			return nil, fmt.Errorf("duplicate operation %q", operation)
 		}
 
-		seen[operation] = struct{}{}
 		operations = append(operations, operation)
 	}
 

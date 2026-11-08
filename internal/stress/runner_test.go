@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/telesma-app/ctap/protocol"
+	"github.com/telesma-app/ctap/transport/ctaphid"
 )
 
 func TestRunnerHonorsGlobalRequestLimit(t *testing.T) {
@@ -126,6 +127,79 @@ func TestRunnerDetectsGetInfoDrift(t *testing.T) {
 	}
 }
 
+func TestRunnerExecutesLock(t *testing.T) {
+	t.Parallel()
+
+	info := supportedTestInfo()
+	config := DefaultConfig()
+	config.DevicePath = "/dev/fake"
+	config.Duration = 5 * time.Second
+	config.Requests = 1
+	config.Operations = []Operation{OperationLock}
+	config.LockSeconds = 7
+	config.ProgressEvery = 0
+
+	device := &fakeDevice{info: info}
+	runner := Runner{
+		Config:       config,
+		BaselineInfo: SnapshotInfo(info),
+		Open: func(context.Context, string) (Device, error) {
+			return device, nil
+		},
+	}
+
+	report, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := device.lockSeconds.Load(); got != uint64(config.LockSeconds) {
+		t.Fatalf("Lock seconds = %d, want %d", got, config.LockSeconds)
+	}
+
+	stats := report.Operations[OperationLock]
+	if stats.Attempts != 1 || stats.Succeeded != 1 || stats.Failed != 0 {
+		t.Fatalf("lock attempts/ok/failed = %d/%d/%d, want 1/1/0", stats.Attempts, stats.Succeeded, stats.Failed)
+	}
+
+	if report.LockSeconds != config.LockSeconds {
+		t.Fatalf("report lock seconds = %d, want %d", report.LockSeconds, config.LockSeconds)
+	}
+}
+
+func TestRunnerClassifiesCTAPHIDLockError(t *testing.T) {
+	t.Parallel()
+
+	info := supportedTestInfo()
+	config := DefaultConfig()
+	config.DevicePath = "/dev/fake"
+	config.Duration = 5 * time.Second
+	config.Requests = 1
+	config.Operations = []Operation{OperationLock}
+	config.ProgressEvery = 0
+	config.ReopenDelay = 0
+
+	runner := Runner{
+		Config:       config,
+		BaselineInfo: SnapshotInfo(info),
+		Open: func(context.Context, string) (Device, error) {
+			return &fakeDevice{
+				info:    info,
+				lockErr: &ctaphid.ErrorResponse{ErrorCode: ctaphid.ERR_INVALID_CMD},
+			}, nil
+		},
+	}
+
+	report, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if report.Failed != 1 || report.FailureKinds["ctaphid-ERR_INVALID_CMD"] != 1 {
+		t.Fatalf("failed/kinds = %d/%v, want CTAPHID invalid command", report.Failed, report.FailureKinds)
+	}
+}
+
 func TestRunnerDoesNotCountRunDeadlineAsDeviceFailure(t *testing.T) {
 	t.Parallel()
 
@@ -193,6 +267,123 @@ func TestRunnerCountsCommandTimeout(t *testing.T) {
 	}
 }
 
+func TestRunnerClosesDeviceWhenOpenFinishesAfterCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	device := &fakeDevice{}
+	config := DefaultConfig()
+	config.DevicePath = "/dev/fake"
+	config.Requests = 1
+	config.ProgressEvery = 0
+	runner := Runner{
+		Config: config,
+		Open: func(context.Context, string) (Device, error) {
+			cancel()
+			return device, nil
+		},
+	}
+
+	report, err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want cancellation", err)
+	}
+
+	if !device.closed.Load() {
+		t.Error("device returned after cancellation was not closed")
+	}
+
+	if report.Attempts != 0 || report.Failed != 0 {
+		t.Errorf("cancellation produced attempts/failures = %d/%d", report.Attempts, report.Failed)
+	}
+}
+
+func TestRunnerRateLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		rate     float64
+		duration time.Duration
+		attempts uint64
+	}{
+		{name: "wait is canceled by run deadline", rate: 1e-9, duration: 10 * time.Millisecond},
+		{name: "ticks allow requests", rate: 1e4, duration: time.Second, attempts: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.DevicePath = "/dev/fake"
+			config.Duration = test.duration
+			config.Rate = test.rate
+			config.Requests = 3
+			config.Workers = 2
+			config.ProgressEvery = 0
+			config.Operations = []Operation{OperationPing}
+			config.PingSizes = []int{0}
+			runner := Runner{
+				Config: config,
+				Open: func(context.Context, string) (Device, error) {
+					return &fakeDevice{}, nil
+				},
+			}
+
+			report, err := runner.Run(t.Context())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			if report.Attempts != test.attempts || report.Succeeded != test.attempts || report.Failed != 0 {
+				t.Errorf("attempts/ok/failed = %d/%d/%d, want %d/%d/0", report.Attempts, report.Succeeded, report.Failed, test.attempts, test.attempts)
+			}
+
+			if test.attempts == 0 && report.Opens != 0 {
+				t.Errorf("opened %d devices while waiting for a rate limit tick", report.Opens)
+			}
+		})
+	}
+}
+
+func TestRunnerWaitsForProgressToFinish(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	config := DefaultConfig()
+	config.DevicePath = "/dev/fake"
+	config.Duration = time.Second
+	config.ProgressEvery = time.Millisecond
+	config.Operations = []Operation{OperationPing}
+	config.PingSizes = []int{0}
+
+	var snapshot Snapshot
+
+	runner := Runner{
+		Config: config,
+		Open: func(context.Context, string) (Device, error) {
+			return &fakeDevice{}, nil
+		},
+		Progress: func(current Snapshot) {
+			if current.Attempts != 0 {
+				cancel()
+
+				snapshot = current
+			}
+		},
+	}
+
+	report, err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want cancellation from progress callback", err)
+	}
+
+	if snapshot.Attempts == 0 || report.Attempts < snapshot.Attempts {
+		t.Errorf("progress/final attempts = %d/%d", snapshot.Attempts, report.Attempts)
+	}
+}
+
 func TestPingPayloadIsDeterministicAndVaries(t *testing.T) {
 	t.Parallel()
 
@@ -230,9 +421,11 @@ func supportedTestInfo() protocol.AuthenticatorGetInfoResponse {
 }
 
 type fakeDevice struct {
-	info    protocol.AuthenticatorGetInfoResponse
-	pingErr error
-	closed  atomic.Bool
+	info        protocol.AuthenticatorGetInfoResponse
+	pingErr     error
+	lockErr     error
+	lockSeconds atomic.Uint64
+	closed      atomic.Bool
 }
 
 type blockingFakeDevice struct {
@@ -248,12 +441,13 @@ func (d *fakeDevice) Ping(context.Context, []byte) error {
 	return d.pingErr
 }
 
-func (d *fakeDevice) GetInfo(context.Context) (protocol.AuthenticatorGetInfoResponse, error) {
-	return d.info, nil
+func (d *fakeDevice) Lock(_ context.Context, seconds uint) error {
+	d.lockSeconds.Store(uint64(seconds))
+	return d.lockErr
 }
 
-func (d *fakeDevice) GetInfoCached() (protocol.AuthenticatorGetInfoResponse, bool) {
-	return d.info, true
+func (d *fakeDevice) GetInfo(context.Context) (protocol.AuthenticatorGetInfoResponse, error) {
+	return d.info, nil
 }
 
 func (d *fakeDevice) GetPINRetries(context.Context) (uint, *bool, error) {
