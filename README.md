@@ -1,6 +1,8 @@
-# go-ctap/stress
+# telesma-app/stress
 
-`go-ctap/stress` is a non-destructive stress test for USB CTAP2 authenticators. It sends CTAPHID and safe CTAP commands,
+[![Go](https://github.com/telesma-app/stress/actions/workflows/go.yml/badge.svg)](https://github.com/telesma-app/stress/actions/workflows/go.yml)
+
+`telesma-app/stress` is a non-destructive stress test for USB CTAP2 authenticators. It sends CTAPHID and safe CTAP commands,
 checks the replies, and reports errors, latency, and request rate.
 
 The tool uses [`telesma-app/ctap`](https://github.com/telesma-app/ctap) and the cgo-free
@@ -11,7 +13,7 @@ The tool uses [`telesma-app/ctap`](https://github.com/telesma-app/ctap) and the 
 > CTAPHID channels. A high load can still hang or restart a device with faulty firmware. Start with one worker and a short
 > run.
 
-## Operations
+## Features
 
 | Operation | What it tests |
 |---|---|
@@ -24,7 +26,23 @@ The tool uses [`telesma-app/ctap`](https://github.com/telesma-app/ctap) and the 
 Each worker opens its own HID handle and CTAPHID channel. This lets the test check how the firmware handles independent
 channels at the same time.
 
+## Installation
+
+See [`go.mod`](go.mod) for the required Go version. Clone the repository and build
+from its root:
+
+```sh
+git clone https://github.com/telesma-app/stress.git
+cd stress
+GOWORK=off go build ./cmd/ctap-stress
+```
+
+The Go module path remains `github.com/go-ctap/stress`. Running the tool requires
+a connected USB FIDO2 authenticator and OS permission to access its HID interface.
+
 ## Quick start
+
+Run these commands from the repository root.
 
 List available FIDO HID devices:
 
@@ -152,17 +170,21 @@ The process uses these exit codes:
   firmware bug.
 - Percentiles are upper bounds from latency buckets, not exact sampled values.
 
-## Testing
+## Development
 
-Run tests and static checks with Go 1.27.3 or newer:
+Run tests and static checks with the Go version required by [`go.mod`](go.mod):
 
 ```sh
-go test ./...
-go vet ./...
+GOWORK=off go test ./...
+GOWORK=off go vet ./...
 ```
 
 Run golangci-lint v2 with the standard linters and `wsl_v5`:
 
 ```sh
-golangci-lint run ./...
+GOWORK=off golangci-lint run ./...
 ```
+
+## License
+
+[Apache License 2.0](LICENSE).
