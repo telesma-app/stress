@@ -34,7 +34,7 @@ from its root:
 ```sh
 git clone https://github.com/telesma-app/stress.git
 cd stress
-GOWORK=off go build ./cmd/ctap-stress
+go build ./cmd/ctap-stress
 ```
 
 The Go module path remains `github.com/go-ctap/stress`. Running the tool requires
@@ -175,14 +175,14 @@ The process uses these exit codes:
 Run tests and static checks with the Go version required by [`go.mod`](go.mod):
 
 ```sh
-GOWORK=off go test ./...
-GOWORK=off go vet ./...
+go test ./...
+go vet ./...
 ```
 
 Run golangci-lint v2 with the standard linters and `wsl_v5`:
 
 ```sh
-GOWORK=off golangci-lint run ./...
+golangci-lint run ./...
 ```
 
 ## License
