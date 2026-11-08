@@ -16,11 +16,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/go-ctap/ctap/authenticator"
-	"github.com/go-ctap/ctap/options"
-	"github.com/go-ctap/ctap/protocol"
-	ghid "github.com/go-ctap/hid"
 	"github.com/go-ctap/stress/internal/stress"
+	"github.com/telesma-app/ctap/authenticator"
+	hidbackend "github.com/telesma-app/ctap/backend/hid"
+	"github.com/telesma-app/ctap/backend/hidproxy"
+	"github.com/telesma-app/ctap/protocol"
+	ghid "github.com/telesma-app/hid"
 )
 
 func main() {
@@ -58,21 +59,25 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	flags.BoolVar(&jsonOutput, "json", false, "write the final report as JSON")
 	flags.StringVar(&operations, "ops", joinOperations(config.Operations), "comma-separated: ping,get-info,pin-retries,uv-retries")
 	flags.StringVar(&pingSizes, "ping-sizes", joinInts(config.PingSizes), "comma-separated CTAPHID ping payload sizes (0..7609); explicit values override the GetInfo limit")
+
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Read-only CTAP/CTAPHID stress runner")
-		fmt.Fprintf(stderr, "\nUsage: %s [flags]\n\n", flags.Name())
+		_, _ = fmt.Fprintln(stderr, "Read-only CTAP/CTAPHID stress runner")
+		_, _ = fmt.Fprintf(stderr, "\nUsage: %s [flags]\n\n", flags.Name())
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+
 		return 2
 	}
+
 	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
+		_, _ = fmt.Fprintf(stderr, "unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
 	}
+
 	flags.Visit(func(setFlag *flag.Flag) {
 		if setFlag.Name == "ping-sizes" {
 			pingSizesExplicit = true
@@ -80,14 +85,16 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	})
 
 	var err error
+
 	config.Operations, err = stress.ParseOperations(operations)
 	if err != nil {
-		fmt.Fprintf(stderr, "invalid -ops: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "invalid -ops: %v\n", err)
 		return 2
 	}
+
 	config.PingSizes, err = stress.ParsePingSizes(pingSizes)
 	if err != nil {
-		fmt.Fprintf(stderr, "invalid -ping-sizes: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "invalid -ping-sizes: %v\n", err)
 		return 2
 	}
 
@@ -103,11 +110,14 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 
 	discoveryCtx, cancelDiscovery := context.WithTimeout(rootCtx, config.OpenTimeout)
 	devices, err := enumerateDevices(discoveryCtx, namedPipe)
+
 	cancelDiscovery()
+
 	if err != nil {
-		fmt.Fprintf(stderr, "device discovery failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "device discovery failed: %v\n", err)
 		return 2
 	}
+
 	if listOnly {
 		printDevices(stdout, devices)
 		return 0
@@ -115,40 +125,48 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 
 	selected, err := selectDevice(devices, selector)
 	if err != nil {
-		fmt.Fprintf(stderr, "%v\n", err)
+		_, _ = fmt.Fprintf(stderr, "%v\n", err)
 		printDevices(stderr, devices)
+
 		return 2
 	}
+
 	config.DevicePath = selected.Path
 	if err := config.Validate(); err != nil {
-		fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
 		return 2
 	}
 
 	open := authenticatorOpener(namedPipe)
 	preflightCtx, cancelPreflight := context.WithTimeout(rootCtx, config.OpenTimeout)
 	preflight, err := open(preflightCtx, config.DevicePath)
+
 	cancelPreflight()
+
 	if err != nil {
-		fmt.Fprintf(stderr, "preflight open failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "preflight open failed: %v\n", err)
 		return 2
 	}
+
 	info, ok := preflight.GetInfoCached()
 	if !ok {
 		closeErr := preflight.Close()
-		fmt.Fprintf(stderr, "preflight GetInfo cache is unexpectedly invalid (close: %v)\n", closeErr)
+		_, _ = fmt.Fprintf(stderr, "preflight GetInfo cache is unexpectedly invalid (close: %v)\n", closeErr)
+
 		return 2
 	}
+
 	if err := preflight.Close(); err != nil {
-		fmt.Fprintf(stderr, "preflight close failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "preflight close failed: %v\n", err)
 		return 2
 	}
+
 	if slices.Contains(config.Operations, stress.OperationPing) {
 		if pingSizesExplicit {
 			if slices.ContainsFunc(config.PingSizes, func(size int) bool {
 				return uint(size) > info.EffectiveMaxMsgSize()
 			}) {
-				fmt.Fprintf(
+				_, _ = fmt.Fprintf(
 					stderr,
 					"explicit ping sizes override authenticator maxMsgSize=%d: %v\n",
 					info.EffectiveMaxMsgSize(),
@@ -157,7 +175,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			}
 		} else if capped := stress.CapPingSizes(config.PingSizes, info.EffectiveMaxMsgSize()); !slices.Equal(config.PingSizes, capped) {
 			config.PingSizes = capped
-			fmt.Fprintf(
+			_, _ = fmt.Fprintf(
 				stderr,
 				"ping sizes capped by authenticator maxMsgSize=%d: %v\n",
 				info.EffectiveMaxMsgSize(),
@@ -165,8 +183,9 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			)
 		}
 	}
+
 	if err := config.ValidateCapabilities(info); err != nil {
-		fmt.Fprintf(stderr, "unsupported configuration: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "unsupported configuration: %v\n", err)
 		return 2
 	}
 
@@ -177,7 +196,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		Open:         open,
 		BaselineInfo: baseline,
 		Progress: func(snapshot stress.Snapshot) {
-			fmt.Fprintf(
+			_, _ = fmt.Fprintf(
 				stderr,
 				"elapsed=%s attempts=%d ok=%d failed=%d rate=%.1f/s\n",
 				snapshot.Elapsed.Round(time.Millisecond),
@@ -189,20 +208,24 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		},
 	}
 	report, runErr := runner.Run(rootCtx)
+
 	if jsonOutput {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
+
 		if err := encoder.Encode(report); err != nil {
-			fmt.Fprintf(stderr, "encode report: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "encode report: %v\n", err)
 			return 2
 		}
 	} else {
 		printReport(stdout, report)
 	}
+
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		fmt.Fprintf(stderr, "run stopped: %v\n", runErr)
+		_, _ = fmt.Fprintf(stderr, "run stopped: %v\n", runErr)
 		return 2
 	}
+
 	if report.Failed != 0 || report.OpenFailures != 0 || report.CloseFailures != 0 {
 		return 1
 	}
@@ -211,27 +234,39 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 }
 
 func authenticatorOpener(namedPipe bool) func(context.Context, string) (stress.Device, error) {
-	var openOptions []options.Option
+	open := hidbackend.Open
 	if namedPipe {
-		openOptions = append(openOptions, options.WithUseNamedPipes())
+		open = hidproxy.Open
 	}
 
 	return func(ctx context.Context, path string) (stress.Device, error) {
-		return authenticator.OpenHID(ctx, path, openOptions...)
+		transport, err := open(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+
+		device, err := authenticator.New(ctx, transport)
+		if err != nil {
+			return nil, errors.Join(err, transport.Close())
+		}
+
+		return device, nil
 	}
 }
 
 func enumerateDevices(ctx context.Context, namedPipe bool) ([]*ghid.DeviceInfo, error) {
-	var enumerateOptions []options.Option
+	enumerate := hidbackend.Devices
 	if namedPipe {
-		enumerateOptions = append(enumerateOptions, options.WithUseNamedPipes())
+		enumerate = hidproxy.Devices
 	}
 
 	var devices []*ghid.DeviceInfo
-	for device, err := range authenticator.Enumerate(ctx, enumerateOptions...) {
+
+	for device, err := range enumerate(ctx) {
 		if err != nil {
 			return nil, err
 		}
+
 		devices = append(devices, device)
 	}
 
@@ -242,28 +277,35 @@ func selectDevice(devices []*ghid.DeviceInfo, selector string) (*ghid.DeviceInfo
 	if len(devices) == 0 {
 		return nil, fmt.Errorf("no FIDO HID devices found")
 	}
+
 	if selector == "" {
 		if len(devices) == 1 {
 			return devices[0], nil
 		}
+
 		return nil, fmt.Errorf("multiple devices found; select one with -device")
 	}
+
 	if ordinal, err := strconv.Atoi(selector); err == nil {
 		if ordinal >= 1 && ordinal <= len(devices) {
 			return devices[ordinal-1], nil
 		}
+
 		return nil, fmt.Errorf("device ordinal %d is outside 1..%d", ordinal, len(devices))
 	}
 
 	var matches []*ghid.DeviceInfo
+
 	for _, device := range devices {
-		if device.Path == selector || device.SerialNbr == selector {
+		if device.Path == selector || (device.SerialNbr.Value != nil && *device.SerialNbr.Value == selector) {
 			matches = append(matches, device)
 		}
 	}
+
 	if len(matches) == 1 {
 		return matches[0], nil
 	}
+
 	if len(matches) > 1 {
 		return nil, fmt.Errorf("device selector %q is ambiguous", selector)
 	}
@@ -273,36 +315,43 @@ func selectDevice(devices []*ghid.DeviceInfo, selector string) (*ghid.DeviceInfo
 
 func printDevices(w io.Writer, devices []*ghid.DeviceInfo) {
 	if len(devices) == 0 {
-		fmt.Fprintln(w, "No FIDO HID devices found.")
+		_, _ = fmt.Fprintln(w, "No FIDO HID devices found.")
 		return
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "#\tVID:PID\tPRODUCT\tSERIAL\tPATH")
+
+	_, _ = fmt.Fprintln(tw, "#\tVID:PID\tPRODUCT\tSERIAL\tPATH")
 	for index, device := range devices {
-		fmt.Fprintf(
+		_, _ = fmt.Fprintf(
 			tw,
-			"%d\t%04x:%04x\t%s\t%s\t%s\n",
+			"%d\t%s:%s\t%s\t%s\t%s\n",
 			index+1,
-			device.VendorID,
-			device.ProductID,
-			emptyDash(device.ProductStr),
-			emptyDash(device.SerialNbr),
+			formatDescriptor(device.VendorID, "%04x"),
+			formatDescriptor(device.ProductID, "%04x"),
+			formatDescriptor(device.ProductStr, "%q"),
+			formatDescriptor(device.SerialNbr, "%q"),
 			device.Path,
 		)
 	}
+
 	_ = tw.Flush()
 }
 
 func printPreamble(w io.Writer, device *ghid.DeviceInfo, info protocol.AuthenticatorGetInfoResponse, config stress.Config) {
-	fmt.Fprintf(w, "device: %s (%04x:%04x), path=%s\n", emptyDash(device.ProductStr), device.VendorID, device.ProductID, device.Path)
-	fmt.Fprintf(w, "CTAP versions: %v, AAGUID: %s, maxMsgSize: %d\n", info.Versions, info.AAGUID, info.EffectiveMaxMsgSize())
-	fmt.Fprintf(w, "load: workers=%d ops=%s timeout=%s duration=%s requests=%d\n", config.Workers, joinOperations(config.Operations), config.CommandTimeout, config.Duration, config.Requests)
-	fmt.Fprintln(w, "suite is read-only; Ctrl-C stops it and still prints the collected report")
+	_, _ = fmt.Fprintf(w, "device: %s (%s:%s), path=%s\n",
+		formatDescriptor(device.ProductStr, "%q"),
+		formatDescriptor(device.VendorID, "%04x"),
+		formatDescriptor(device.ProductID, "%04x"),
+		device.Path,
+	)
+	_, _ = fmt.Fprintf(w, "CTAP versions: %v, AAGUID: %s, maxMsgSize: %d\n", info.Versions, info.AAGUID, info.EffectiveMaxMsgSize())
+	_, _ = fmt.Fprintf(w, "load: workers=%d ops=%s timeout=%s duration=%s requests=%d\n", config.Workers, joinOperations(config.Operations), config.CommandTimeout, config.Duration, config.Requests)
+	_, _ = fmt.Fprintln(w, "suite is read-only; Ctrl-C stops it and still prints the collected report")
 }
 
 func printReport(w io.Writer, report stress.Report) {
-	fmt.Fprintf(
+	_, _ = fmt.Fprintf(
 		w,
 		"\nResult: elapsed=%s attempts=%d ok=%d failed=%d rate=%.1f/s opens=%d open_failures=%d close_failures=%d\n",
 		report.Elapsed.Round(time.Millisecond),
@@ -315,10 +364,11 @@ func printReport(w io.Writer, report stress.Report) {
 		report.CloseFailures,
 	)
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "OPERATION\tATTEMPTS\tOK\tFAILED\tAVG\tP50<=\tP95<=\tP99<=\tMAX\tPING BYTES")
+	_, _ = fmt.Fprintln(tw, "OPERATION\tATTEMPTS\tOK\tFAILED\tAVG\tP50<=\tP95<=\tP99<=\tMAX\tPING BYTES")
+
 	for _, operation := range report.SortedOperations() {
 		stats := report.Operations[operation]
-		fmt.Fprintf(
+		_, _ = fmt.Fprintf(
 			tw,
 			"%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%d\n",
 			operation,
@@ -333,27 +383,35 @@ func printReport(w io.Writer, report stress.Report) {
 			stats.PingBytes,
 		)
 	}
+
 	_ = tw.Flush()
+
 	if len(report.FailureKinds) != 0 {
-		fmt.Fprintln(w, "Failure kinds:")
+		_, _ = fmt.Fprintln(w, "Failure kinds:")
+
 		kinds := make([]string, 0, len(report.FailureKinds))
 		for kind := range report.FailureKinds {
 			kinds = append(kinds, kind)
 		}
+
 		slices.Sort(kinds)
+
 		for _, kind := range kinds {
 			count := report.FailureKinds[kind]
-			fmt.Fprintf(w, "  %s: %d\n", kind, count)
+			_, _ = fmt.Fprintf(w, "  %s: %d\n", kind, count)
 		}
 	}
+
 	if len(report.FailureSamples) != 0 {
-		fmt.Fprintln(w, "Failure samples:")
+		_, _ = fmt.Fprintln(w, "Failure samples:")
+
 		for _, sample := range report.FailureSamples {
 			pingSize := ""
 			if sample.PingBytes != nil {
 				pingSize = fmt.Sprintf(" bytes=%d", *sample.PingBytes)
 			}
-			fmt.Fprintf(w, "  %s worker=%d op=%s%s kind=%s: %s\n", sample.At.Format(time.RFC3339Nano), sample.Worker, sample.Operation, pingSize, sample.Kind, sample.Error)
+
+			_, _ = fmt.Fprintf(w, "  %s worker=%d op=%s%s kind=%s: %s\n", sample.At.Format(time.RFC3339Nano), sample.Worker, sample.Operation, pingSize, sample.Kind, sample.Error)
 		}
 	}
 }
@@ -376,10 +434,14 @@ func joinInts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
-func emptyDash(value string) string {
-	if value == "" {
-		return "-"
+func formatDescriptor[T any](descriptor ghid.Descriptor[T], format string) string {
+	if descriptor.Err != nil {
+		return fmt.Sprintf("<error message=%q>", descriptor.Err.Error())
 	}
 
-	return value
+	if descriptor.Value == nil {
+		return "<unavailable>"
+	}
+
+	return fmt.Sprintf(format, *descriptor.Value)
 }

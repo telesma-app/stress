@@ -1,21 +1,21 @@
 module github.com/go-ctap/stress
 
-go 1.26.3
+go 1.27.3
 
 require (
-	github.com/go-ctap/ctap v0.33.1
-	github.com/go-ctap/hid v0.10.0
-	github.com/google/uuid v1.6.0
+	github.com/telesma-app/ctap v0.53.0
+	github.com/telesma-app/hid v0.14.1
 )
 
 require (
-	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ebitengine/purego v0.10.2 // indirect
-	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
-	github.com/go-ctap/windows-proxy v0.3.1 // indirect
-	github.com/samber/lo v1.53.0 // indirect
+	github.com/Microsoft/go-winio v0.6.4 // indirect
+	github.com/cloudflare/circl v1.6.5 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
+	github.com/ebitengine/purego v0.11.3 // indirect
+	github.com/fxamacker/cbor/v2 v2.10.0 // indirect
+	github.com/telesma-app/windows-proxy v0.7.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )

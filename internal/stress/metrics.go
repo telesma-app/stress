@@ -92,15 +92,19 @@ func (m *metricSet) record(result attempt) {
 		metric = &operationMetric{buckets: make([]uint64, len(latencyBounds)+1)}
 		m.operations[result.Operation] = metric
 	}
+
 	metric.attempts++
 	metric.total += result.Duration
+
 	metric.pingBytes += uint64(result.PingBytes)
 	if metric.min == 0 || result.Duration < metric.min {
 		metric.min = result.Duration
 	}
+
 	if result.Duration > metric.max {
 		metric.max = result.Duration
 	}
+
 	bucket := len(latencyBounds)
 	for index, bound := range latencyBounds {
 		if result.Duration <= bound {
@@ -108,6 +112,7 @@ func (m *metricSet) record(result attempt) {
 			break
 		}
 	}
+
 	metric.buckets[bucket]++
 
 	if result.Err == nil {
@@ -116,6 +121,7 @@ func (m *metricSet) record(result attempt) {
 	}
 
 	metric.failed++
+
 	m.failureKinds[result.ErrorKind]++
 	if len(m.failureSamples) < m.sampleLimit {
 		sample := FailureSample{
@@ -129,6 +135,7 @@ func (m *metricSet) record(result attempt) {
 			pingBytes := result.PingBytes
 			sample.PingBytes = &pingBytes
 		}
+
 		m.failureSamples = append(m.failureSamples, sample)
 	}
 }
@@ -149,6 +156,7 @@ func (m *metricSet) recordCloseFailure(worker int, err error) {
 
 	m.closeFailures++
 	kind := "close/" + classifyError(err)
+
 	m.failureKinds[kind]++
 	if len(m.failureSamples) < m.sampleLimit {
 		m.failureSamples = append(m.failureSamples, FailureSample{
@@ -172,11 +180,13 @@ func (m *metricSet) snapshot(now time.Time) Snapshot {
 	for kind, count := range m.failureKinds {
 		snapshot.FailureKinds[kind] = count
 	}
+
 	for _, metric := range m.operations {
 		snapshot.Attempts += metric.attempts
 		snapshot.Succeeded += metric.succeeded
 		snapshot.Failed += metric.failed
 	}
+
 	if snapshot.Elapsed > 0 {
 		snapshot.RequestsPerSecond = float64(snapshot.Attempts) / snapshot.Elapsed.Seconds()
 	}
@@ -214,14 +224,17 @@ func (m *metricSet) report(endedAt time.Time) Report {
 		if metric.attempts != 0 {
 			stats.Average = metric.total / time.Duration(metric.attempts)
 		}
+
 		report.Operations[operation] = stats
 		report.Attempts += metric.attempts
 		report.Succeeded += metric.succeeded
 		report.Failed += metric.failed
 	}
+
 	for kind, count := range m.failureKinds {
 		report.FailureKinds[kind] = count
 	}
+
 	if report.Elapsed > 0 {
 		report.RequestsPerSecond = float64(report.Attempts) / report.Elapsed.Seconds()
 	}
@@ -233,7 +246,9 @@ func percentile(buckets []uint64, total uint64, quantile float64) time.Duration 
 	if total == 0 {
 		return 0
 	}
+
 	rank := uint64(float64(total)*quantile + 0.999999999)
+
 	var seen uint64
 	for index, count := range buckets {
 		seen += count
@@ -241,6 +256,7 @@ func percentile(buckets []uint64, total uint64, quantile float64) time.Duration 
 			if index < len(latencyBounds) {
 				return latencyBounds[index]
 			}
+
 			return latencyBounds[len(latencyBounds)-1]
 		}
 	}
@@ -254,6 +270,7 @@ func (r Report) SortedOperations() []Operation {
 	for operation := range r.Operations {
 		operations = append(operations, operation)
 	}
+
 	slices.SortFunc(operations, func(a, b Operation) int {
 		return cmp.Compare(string(a), string(b))
 	})

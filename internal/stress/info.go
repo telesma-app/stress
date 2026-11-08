@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/go-ctap/ctap/attestation"
-	"github.com/go-ctap/ctap/credential"
-	"github.com/go-ctap/ctap/extension"
-	"github.com/go-ctap/ctap/protocol"
+	"github.com/telesma-app/ctap/attestation"
+	"github.com/telesma-app/ctap/credential"
+	"github.com/telesma-app/ctap/extension"
+	"github.com/telesma-app/ctap/protocol"
 )
 
 // InfoSnapshot is the stable capability portion of authenticatorGetInfo.
@@ -88,6 +88,7 @@ func (s InfoSnapshot) Signature() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal GetInfo snapshot: %w", err)
 	}
+
 	digest := sha256.Sum256(encoded)
 
 	return hex.EncodeToString(digest[:]), nil

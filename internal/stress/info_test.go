@@ -2,9 +2,9 @@ package stress
 
 import (
 	"testing"
+	"uuid"
 
-	"github.com/go-ctap/ctap/protocol"
-	"github.com/google/uuid"
+	"github.com/telesma-app/ctap/protocol"
 )
 
 func TestInfoSignatureIgnoresVolatileFields(t *testing.T) {
@@ -21,6 +21,7 @@ func TestInfoSignatureIgnoresVolatileFields(t *testing.T) {
 		EncIdentifier:                    []byte{1, 2, 3},
 		EncCredStoreState:                []byte{4, 5, 6},
 	}
+
 	want, err := SnapshotInfo(info).Signature()
 	if err != nil {
 		t.Fatalf("Signature: %v", err)
@@ -30,10 +31,12 @@ func TestInfoSignatureIgnoresVolatileFields(t *testing.T) {
 	uvCount = 3
 	info.EncIdentifier = []byte{7}
 	info.EncCredStoreState = []byte{8}
+
 	got, err := SnapshotInfo(info).Signature()
 	if err != nil {
 		t.Fatalf("Signature: %v", err)
 	}
+
 	if got != want {
 		t.Fatalf("volatile fields changed signature: got %s, want %s", got, want)
 	}
@@ -46,15 +49,19 @@ func TestInfoSignatureDetectsCapabilityDrift(t *testing.T) {
 		Versions: protocol.Versions{protocol.FIDO_2_1},
 		Options:  map[protocol.Option]bool{protocol.OptionClientPIN: true},
 	}
+
 	want, err := SnapshotInfo(info).Signature()
 	if err != nil {
 		t.Fatalf("Signature: %v", err)
 	}
+
 	info.Options[protocol.OptionClientPIN] = false
+
 	got, err := SnapshotInfo(info).Signature()
 	if err != nil {
 		t.Fatalf("Signature: %v", err)
 	}
+
 	if got == want {
 		t.Fatal("capability drift did not change signature")
 	}

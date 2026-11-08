@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-ctap/ctap/authenticator"
-	"github.com/go-ctap/ctap/protocol"
-	ctaptransport "github.com/go-ctap/ctap/transport"
-	"github.com/go-ctap/ctap/transport/ctaphid"
+	"github.com/telesma-app/ctap/authenticator"
+	"github.com/telesma-app/ctap/protocol"
+	ctaptransport "github.com/telesma-app/ctap/transport"
+	"github.com/telesma-app/ctap/transport/ctaphid"
 )
 
 // Device is the non-mutating subset used by the stress runner.
@@ -48,11 +48,14 @@ func (r *Runner) Run(parent context.Context) (Report, error) {
 	if r.Open == nil {
 		return Report{}, fmt.Errorf("open function is nil")
 	}
+
 	if err := r.Config.Validate(); err != nil {
 		return Report{}, err
 	}
+
 	r.nextRequest.Store(0)
 	r.nextPing.Store(0)
+
 	baselineSignature, err := r.BaselineInfo.Signature()
 	if err != nil {
 		return Report{}, err
@@ -63,6 +66,7 @@ func (r *Runner) Run(parent context.Context) (Report, error) {
 
 	startedAt := time.Now()
 	metrics := newMetricSet(startedAt, r.Config.FailureSamples)
+
 	limiter, err := newRateLimiter(r.Config.Rate)
 	if err != nil {
 		return Report{}, err
@@ -74,12 +78,15 @@ func (r *Runner) Run(parent context.Context) (Report, error) {
 
 	var workers sync.WaitGroup
 	workers.Add(r.Config.Workers)
+
 	for workerID := range r.Config.Workers {
 		go func() {
 			defer workers.Done()
+
 			r.runWorker(runCtx, workerID+1, baselineSignature, limiter, metrics)
 		}()
 	}
+
 	workers.Wait()
 	cancel()
 	<-progressDone
@@ -129,19 +136,24 @@ func (r *Runner) runWorker(
 		if !ok {
 			return
 		}
+
 		if err := limiter.Wait(ctx); err != nil {
 			return
 		}
 
 		operation := r.Config.Operations[(requestNumber-1)%uint64(len(r.Config.Operations))]
+
 		if device == nil {
 			startedAt := time.Now()
 			opened, err := r.openDevice(ctx)
 			openDuration := time.Since(startedAt)
+
 			if ctx.Err() != nil {
 				return
 			}
+
 			metrics.recordOpen(err == nil)
+
 			if err != nil {
 				metrics.record(attempt{
 					Operation: operation,
@@ -150,11 +162,14 @@ func (r *Runner) runWorker(
 					Err:       fmt.Errorf("open device: %w", err),
 					ErrorKind: "open/" + classifyError(err),
 				})
+
 				if !waitReopen(ctx, r.Config.ReopenDelay) {
 					return
 				}
+
 				continue
 			}
+
 			device = opened
 		}
 
@@ -162,7 +177,9 @@ func (r *Runner) runWorker(
 		if ctx.Err() != nil && errors.Is(result.Err, ctx.Err()) {
 			return
 		}
+
 		metrics.record(result)
+
 		if result.Err == nil || !r.Config.ReopenOnError {
 			continue
 		}
@@ -170,7 +187,9 @@ func (r *Runner) runWorker(
 		if err := device.Close(); err != nil {
 			metrics.recordCloseFailure(workerID, err)
 		}
+
 		device = nil
+
 		if !waitReopen(ctx, r.Config.ReopenDelay) {
 			return
 		}
@@ -204,6 +223,7 @@ func (r *Runner) execute(
 	defer cancel()
 
 	startedAt := time.Now()
+
 	result := attempt{Operation: operation, Worker: workerID}
 	switch operation {
 	case OperationPing:
@@ -215,9 +235,11 @@ func (r *Runner) execute(
 		result.Err = device.Ping(commandCtx, payload)
 	case OperationGetInfo:
 		var info protocol.AuthenticatorGetInfoResponse
+
 		info, result.Err = device.GetInfo(commandCtx)
 		if result.Err == nil && r.Config.CheckInfoStable {
 			var signature string
+
 			signature, result.Err = SnapshotInfo(info).Signature()
 			if result.Err == nil && signature != baselineSignature {
 				result.Err = &infoDriftError{Want: baselineSignature, Got: signature}
@@ -230,6 +252,7 @@ func (r *Runner) execute(
 	default:
 		result.Err = fmt.Errorf("unknown operation %q", operation)
 	}
+
 	result.Duration = time.Since(startedAt)
 	if result.Err != nil {
 		result.ErrorKind = classifyError(result.Err)
@@ -240,6 +263,7 @@ func (r *Runner) execute(
 
 func (r *Runner) reportProgress(ctx context.Context, metrics *metricSet, done chan<- struct{}) {
 	defer close(done)
+
 	if r.Progress == nil || r.Config.ProgressEvery == 0 {
 		<-ctx.Done()
 		return
@@ -247,6 +271,7 @@ func (r *Runner) reportProgress(ctx context.Context, metrics *metricSet, done ch
 
 	ticker := time.NewTicker(r.Config.ProgressEvery)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -259,6 +284,7 @@ func (r *Runner) reportProgress(ctx context.Context, metrics *metricSet, done ch
 
 func pingPayload(workerID int, sequence uint64, size int) []byte {
 	payload := make([]byte, size)
+
 	state := sequence ^ uint64(workerID)*0x9e3779b97f4a7c15
 	for index := range payload {
 		state ^= state << 13
@@ -283,31 +309,39 @@ func classifyError(err error) string {
 	if err == nil {
 		return ""
 	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
+
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
 	}
+
 	var drift *infoDriftError
 	if errors.As(err, &drift) {
 		return "get-info-drift"
 	}
+
 	if errors.Is(err, authenticator.ErrPingPongMismatch) {
 		return "ping-mismatch"
 	}
+
 	var invalidated *ctaptransport.DeviceInvalidatedError
 	if errors.As(err, &invalidated) {
 		return "device-invalidated"
 	}
+
 	var ioErr *ctaptransport.IOError
 	if errors.As(err, &ioErr) {
 		return "io-" + string(ioErr.Operation)
 	}
+
 	var ctapErr *ctaptransport.CTAPError
 	if errors.As(err, &ctapErr) {
 		return "ctap-" + ctapErr.StatusCode.String()
 	}
+
 	var ctaphidErr *ctaphid.ErrorResponse
 	if errors.As(err, &ctaphidErr) {
 		return "ctaphid-" + ctaphidErr.ErrorCode.String()
@@ -320,8 +354,10 @@ func waitReopen(ctx context.Context, delay time.Duration) bool {
 	if delay == 0 {
 		return ctx.Err() == nil
 	}
+
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
+
 	select {
 	case <-ctx.Done():
 		return false
@@ -338,6 +374,7 @@ func newRateLimiter(rate float64) (*rateLimiter, error) {
 	if rate == 0 {
 		return &rateLimiter{}, nil
 	}
+
 	interval := time.Duration(float64(time.Second) / rate)
 	if interval < time.Nanosecond {
 		return nil, fmt.Errorf("rate %.3f is too high", rate)
@@ -350,6 +387,7 @@ func (l *rateLimiter) Wait(ctx context.Context) error {
 	if l.ticker == nil {
 		return ctx.Err()
 	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

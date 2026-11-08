@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-ctap/ctap/protocol"
+	"github.com/telesma-app/ctap/protocol"
 )
 
 func TestRunnerHonorsGlobalRequestLimit(t *testing.T) {
@@ -35,13 +35,16 @@ func TestRunnerHonorsGlobalRequestLimit(t *testing.T) {
 			return &fakeDevice{info: info}, nil
 		},
 	}
+
 	report, err := runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if report.Attempts != config.Requests || report.Succeeded != config.Requests || report.Failed != 0 {
 		t.Fatalf("attempts/ok/failed = %d/%d/%d, want %d/%d/0", report.Attempts, report.Succeeded, report.Failed, config.Requests, config.Requests)
 	}
+
 	for _, operation := range config.Operations {
 		if report.Operations[operation].Attempts != 25 {
 			t.Fatalf("%s attempts = %d, want 25", operation, report.Operations[operation].Attempts)
@@ -63,6 +66,7 @@ func TestRunnerReopensAfterFailure(t *testing.T) {
 	config.ReopenDelay = 0
 
 	var openCount atomic.Uint64
+
 	runner := Runner{
 		Config:       config,
 		BaselineInfo: SnapshotInfo(info),
@@ -71,16 +75,20 @@ func TestRunnerReopensAfterFailure(t *testing.T) {
 			return &fakeDevice{info: info, pingErr: errorOnFirstOpen(count)}, nil
 		},
 	}
+
 	report, err := runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if report.Attempts != 3 || report.Succeeded != 2 || report.Failed != 1 {
 		t.Fatalf("attempts/ok/failed = %d/%d/%d, want 3/2/1", report.Attempts, report.Succeeded, report.Failed)
 	}
+
 	if report.Opens != 2 || report.OpenFailures != 0 {
 		t.Fatalf("opens/open failures = %d/%d, want 2/0", report.Opens, report.OpenFailures)
 	}
+
 	if report.FailureKinds["other"] != 1 {
 		t.Fatalf("failure kinds = %v, want other=1", report.FailureKinds)
 	}
@@ -107,10 +115,12 @@ func TestRunnerDetectsGetInfoDrift(t *testing.T) {
 			return &fakeDevice{info: drifted}, nil
 		},
 	}
+
 	report, err := runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if report.Failed != 1 || report.FailureKinds["get-info-drift"] != 1 {
 		t.Fatalf("failed/kinds = %d/%v, want drift failure", report.Failed, report.FailureKinds)
 	}
@@ -136,10 +146,12 @@ func TestRunnerDoesNotCountRunDeadlineAsDeviceFailure(t *testing.T) {
 			return &blockingFakeDevice{fakeDevice: fakeDevice{info: info}}, nil
 		},
 	}
+
 	report, err := runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if report.Failed != 0 {
 		t.Fatalf("deadline produced %d device failures", report.Failed)
 	}
@@ -166,13 +178,16 @@ func TestRunnerCountsCommandTimeout(t *testing.T) {
 			return &blockingFakeDevice{fakeDevice: fakeDevice{info: info}}, nil
 		},
 	}
+
 	report, err := runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if report.Failed != 1 || report.FailureKinds["timeout"] != 1 {
 		t.Fatalf("failed/kinds = %d/%v, want timeout failure", report.Failed, report.FailureKinds)
 	}
+
 	if len(report.FailureSamples) != 1 || report.FailureSamples[0].PingBytes == nil || *report.FailureSamples[0].PingBytes != 1 {
 		t.Fatalf("failure samples = %#v, want pingBytes=1", report.FailureSamples)
 	}
@@ -184,9 +199,11 @@ func TestPingPayloadIsDeterministicAndVaries(t *testing.T) {
 	first := pingPayload(1, 2, 128)
 	second := pingPayload(1, 2, 128)
 	other := pingPayload(2, 2, 128)
+
 	if string(first) != string(second) {
 		t.Fatal("same inputs produced different payloads")
 	}
+
 	if string(first) == string(other) {
 		t.Fatal("different worker produced identical payload")
 	}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-ctap/ctap/protocol"
+	"github.com/telesma-app/ctap/protocol"
 )
 
 // Operation identifies one non-mutating authenticator command.
@@ -67,46 +67,59 @@ func (c Config) Validate() error {
 	if c.DevicePath == "" {
 		return fmt.Errorf("device path is empty")
 	}
+
 	if c.Duration < 0 {
 		return fmt.Errorf("duration cannot be negative")
 	}
+
 	if c.Duration == 0 && c.Requests == 0 {
 		return fmt.Errorf("duration and requests cannot both be zero")
 	}
+
 	if c.Workers < 1 {
 		return fmt.Errorf("workers must be at least 1")
 	}
+
 	if c.CommandTimeout <= 0 {
 		return fmt.Errorf("command timeout must be positive")
 	}
+
 	if c.OpenTimeout <= 0 {
 		return fmt.Errorf("open timeout must be positive")
 	}
+
 	if c.Rate < 0 || c.Rate > 1e9 {
 		return fmt.Errorf("rate must be between 0 and 1e9 requests/second")
 	}
+
 	if len(c.Operations) == 0 {
 		return fmt.Errorf("at least one operation is required")
 	}
+
 	for _, operation := range c.Operations {
 		if _, ok := knownOperations[operation]; !ok {
 			return fmt.Errorf("unknown operation %q", operation)
 		}
 	}
+
 	if containsOperation(c.Operations, OperationPing) && len(c.PingSizes) == 0 {
 		return fmt.Errorf("at least one ping size is required")
 	}
+
 	for _, size := range c.PingSizes {
 		if size < 0 || size > 7609 {
 			return fmt.Errorf("ping size %d is outside CTAPHID range 0..7609", size)
 		}
 	}
+
 	if c.ReopenDelay < 0 {
 		return fmt.Errorf("reopen delay cannot be negative")
 	}
+
 	if c.ProgressEvery < 0 {
 		return fmt.Errorf("progress interval cannot be negative")
 	}
+
 	if c.FailureSamples < 0 {
 		return fmt.Errorf("failure sample limit cannot be negative")
 	}
@@ -121,14 +134,17 @@ func (c Config) ValidateCapabilities(info protocol.AuthenticatorGetInfoResponse)
 		if _, ok := info.Options[protocol.OptionClientPIN]; !ok {
 			return fmt.Errorf("operation %q requires the clientPin option", OperationPINRetries)
 		}
+
 		if !supportsPinUvAuthProtocol(info.PinUvAuthProtocols) {
 			return fmt.Errorf("operation %q requires a reported pinUvAuthProtocol", OperationPINRetries)
 		}
 	}
+
 	if containsOperation(c.Operations, OperationUVRetries) {
 		if _, ok := info.Options[protocol.OptionUserVerification]; !ok {
 			return fmt.Errorf("operation %q requires the uv option", OperationUVRetries)
 		}
+
 		if !supportsCTAP21(info.Versions) {
 			return fmt.Errorf("operation %q requires CTAP 2.1 or newer", OperationUVRetries)
 		}
@@ -173,15 +189,18 @@ func containsOperation(operations []Operation, want Operation) bool {
 func ParseOperations(value string) ([]Operation, error) {
 	parts := strings.Split(value, ",")
 	operations := make([]Operation, 0, len(parts))
+
 	seen := make(map[Operation]struct{}, len(parts))
 	for _, part := range parts {
 		operation := Operation(strings.TrimSpace(part))
 		if _, ok := knownOperations[operation]; !ok {
 			return nil, fmt.Errorf("unknown operation %q", operation)
 		}
+
 		if _, ok := seen[operation]; ok {
 			return nil, fmt.Errorf("duplicate operation %q", operation)
 		}
+
 		seen[operation] = struct{}{}
 		operations = append(operations, operation)
 	}
@@ -192,19 +211,23 @@ func ParseOperations(value string) ([]Operation, error) {
 // ParsePingSizes parses comma-separated CTAPHID payload sizes.
 func ParsePingSizes(value string) ([]int, error) {
 	parts := strings.Split(value, ",")
+
 	sizes := make([]int, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			return nil, fmt.Errorf("empty ping size")
 		}
+
 		size, err := strconv.Atoi(part)
 		if err != nil {
 			return nil, fmt.Errorf("parse ping size %q: %w", part, err)
 		}
+
 		if size < 0 || size > 7609 {
 			return nil, fmt.Errorf("ping size %d is outside CTAPHID range 0..7609", size)
 		}
+
 		sizes = append(sizes, size)
 	}
 
@@ -217,12 +240,14 @@ func ParsePingSizes(value string) ([]int, error) {
 func CapPingSizes(sizes []int, maxMessageSize uint) []int {
 	limit := int(min(maxMessageSize, uint(7609)))
 	capped := make([]int, 0, len(sizes))
+
 	seen := make(map[int]struct{}, len(sizes))
 	for _, size := range sizes {
 		size = min(size, limit)
 		if _, ok := seen[size]; ok {
 			continue
 		}
+
 		seen[size] = struct{}{}
 		capped = append(capped, size)
 	}
